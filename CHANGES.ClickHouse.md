@@ -58,6 +58,25 @@ structural (`iguana`) encoding.
 > with the fixture harness checked in alongside the ClickHouse integration, and is exercised by the
 > ClickHouse round-trip test on x86 AVX-512 CI. Run-validate on AVX-512 hardware before relying on it.
 
+## AArch64 NEON acceleration
+
+* **`decoder_neon.cpp` — NEON structural decoder.** A NEON implementation of the Iguana sequence
+  decoder: matches are copied with 16-byte NEON loads/stores when the match distance is >= 16
+  (the encoder's end-of-buffer clamp keeps such copies in bounds); shorter distances replicate
+  byte-wise. Selected at process start on AArch64 (`decoder::at_process_start`). NEON is part of the
+  AArch64 baseline, so no runtime feature check is needed.
+* **`output_stream.cpp` — bulk literal copy.** `append(p, n)` is now a bulk memcpy (was
+  byte-at-a-time), which speeds up literal runs on every architecture.
+
+Unlike the AVX-512 kernel, the NEON kernel was developed, **run, byte-exact-validated and
+benchmarked natively** on an AArch64 (Graviton, 128-bit SVE2) host. Measured decode throughput on
+4 MiB blocks: highly repetitive 0.44 -> 6.8 GB/s (15x), log-line data 0.41 -> 2.6 GB/s (6.4x),
+long-match data 0.44 -> 22.7 GB/s (51x). Entropy-bound data (mostly literals + rANS) is unchanged,
+as the structural copy is not its bottleneck there.
+
+`IGUANA_DISABLE_DISPATCH` forces the portable kernels (used for the A/B benchmark above and for
+debugging).
+
 ## Not covered
 
 Still portable-only: the AVX-512 **ANS32 encoder**, the **structural (Iguana) decoder**, and the
