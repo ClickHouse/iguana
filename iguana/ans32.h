@@ -31,6 +31,9 @@ namespace iguana::ans32 {
        static const internal::initializer<encoder> g_Initializer;
 
     private:
+        // NOTE (ClickHouse): forward and reverse halves are accumulated separately so that the
+        // forward half can be reversed in place when assembling the final stream (see encode()).
+        output_stream m_fwd;
         output_stream m_rev;
 
     public:

@@ -35,6 +35,10 @@ void iguana::ans_nibble::encoder::encode(output_stream& dst, const statistics& s
         exception::from_error(ctx.ec);
     }
     dst.reserve_more(statistics::dense_table_max_length);
+
+    // NOTE (ClickHouse): as with ans1/ans32, the upstream port never serialized the statistics
+    // table that the decoder recovers from the tail of the stream. Append it so the round-trip works.
+    stats.serialize(dst);
 }
 
 void iguana::ans_nibble::encoder::compress_portable(context& ctx) {

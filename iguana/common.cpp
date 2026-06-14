@@ -14,11 +14,17 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <stdexcept>
+#include <string>
 #include "common.h"
 
 //
 
 void iguana::internal::unimplemented(const char* file_name, std::uint64_t line) {
-    std::fprintf(stderr, "invoked an unimplemented function %s, %llu\n", file_name, line);
-    std::abort();
+    // NOTE (ClickHouse): the upstream port called std::abort() here, which would crash the
+    // server when decompressing corrupted or hostile data that reaches an unimplemented code
+    // path (e.g. an unsupported command byte in the bitstream). Throw instead so the error can
+    // propagate and be reported as a decompression failure.
+    throw std::runtime_error(
+        std::string("iguana: invoked an unimplemented function ") + file_name + ":" + std::to_string(line));
 }

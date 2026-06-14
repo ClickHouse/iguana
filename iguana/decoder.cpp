@@ -80,13 +80,10 @@ std::uint64_t iguana::decoder::read_control_var_uint(const std::uint8_t* src, ss
 }
 
 void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const src, std::uint64_t uncompressed_len, ssize_t& ctrl_cursor) {
-    IGUANA_UNIMPLEMENTED
-
-/*TODO
-func (d *Decoder) decode(, dst []byte, src []byte) ([]byte, errorCode) {
-	d.reset()
-	var ec errorCode
-*/
+    // NOTE (ClickHouse): the upstream port left an IGUANA_UNIMPLEMENTED marker at the top of this
+    // function, which aborted before reaching the command dispatch loop below. The copy_raw,
+    // decode_ans32 and decode_ans1 command handlers are fully implemented, so the marker is removed
+    // to enable the entropy-only decoding path used by the Iguana codec.
 
     context ctx{ .dst = dst, .last_offset = 0 };
 
@@ -148,33 +145,25 @@ func (d *Decoder) decode(, dst []byte, src []byte) ([]byte, errorCode) {
                     // Decode the compressed content
                     ans_nibble::decoder{}.decode(dst, static_cast<std::size_t>(len_uncompressed), is, ans_tab);
                 }
-
-                
-
-
-
-IGUANA_UNIMPLEMENTED
-/*TODO			encoded, ec := ansNibbleDecodeTable(&d.ansnibtab, ans)
-			if ec != ecOK {
-				return dst, ec
-			}
-			dst, ec = ansNibbleDecodeExplicit(encoded, &d.ansnibtab, int(lenUncompressed), dst)
-			if ec != ecOK {
-				return dst, ec
-			}
-*/
-        } break;
+            } break;
 
 		case command::decode_iguana: {
+            // NOTE (ClickHouse): completed from the Go reference (decoder.go). Each substream is
+            // either stored verbatim or entropy-coded; entropy-coded substreams are decoded into
+            // their own buffer (entropy_storage) which must outlive the g_Decompress call below.
+            // The portable sequence decoder reads the substreams through bounds-checked fetches, so
+            // no SIMD-style end padding (padStream in the Go reference) is required.
+            output_stream entropy_storage[substream::count];
+
 			// Fetch the header byte
 			if (ctrl_cursor < 0) {
                 throw out_of_input_data_exception();
 			}
 
             const std::uint64_t hdr = read_control_var_uint(src, ctrl_cursor);
-        
-			// Fetch the uncompressed streams' lengths
+
 			if (hdr == 0) {
+                // No substream is entropy-coded: each is stored verbatim.
 				for(std::size_t i = 0; i != substream::count; ++i) {
                     const std::uint64_t u_len = read_control_var_uint(src, ctrl_cursor);
                     ctx.streams[i].set(src + data_cursor, std::size_t(u_len));
@@ -182,102 +171,43 @@ IGUANA_UNIMPLEMENTED
 				}
 			} else {
 				std::uint64_t u_lens[substream::count];
-				std::uint64_t entropy_buffer_size = 0;
-
 				for(std::size_t i = 0; i != substream::count; ++i) {
-                    const std::uint64_t u_len = read_control_var_uint(src, ctrl_cursor);
-					u_lens[i] = u_len;
-					if (const auto em = static_cast<entropy_mode>((hdr >> (i * 4)) & 0x0f); em != entropy_mode::none) {
-						entropy_buffer_size += u_len;
-					}
+                    u_lens[i] = read_control_var_uint(src, ctrl_cursor);
 				}
 
-                m_ent_buf.reset(entropy_buffer_size + pad_size);                
-				std::uint64_t ent_offs = 0;
-
 				for(std::size_t i = 0; i != substream::count; ++i) {
-					const auto u_len = u_lens[i];
-					if (const auto em = static_cast<entropy_mode>((hdr >> (i * 4)) & 0x0f); em == entropy_mode::none) {
+					const std::uint64_t u_len = u_lens[i];
+					const auto em = static_cast<entropy_mode>((hdr >> (i * 4)) & 0x0f);
+					if (em == entropy_mode::none) {
                         ctx.streams[i].set(src + data_cursor, std::size_t(u_len));
-                       
-
-IGUANA_UNIMPLEMENTED
-		//TODO				ctx.pack[i].set = d.padStream(i, src[dataCursor:dataCursor+uLen])
-						data_cursor += u_len;
+                        data_cursor += u_len;
 					} else {
                         const std::uint64_t c_len = read_control_var_uint(src, ctrl_cursor);
+                        input_stream is{src + data_cursor, std::size_t(c_len)};
+                        data_cursor += c_len;
 						switch(em) {
 						case entropy_mode::ans32: {
-
-                        // Recover the ANS decoding table from the input stream                
-                        ans32::decoder::statistics::decoding_table ans_tab;
-                        {   input_stream is{src + data_cursor, std::size_t(c_len)};
-                            data_cursor += c_len;
+                            ans32::decoder::statistics::decoding_table ans_tab;
                             ans32::decoder::statistics{is}.build_decoding_table(ans_tab);
-                        }
-                        
-                        
-                                          
-      
-IGUANA_UNIMPLEMENTED
-/*TODO
-							ans := src[dataCursor : dataCursor+cLen]
-							dataCursor += cLen
-
-							encoded, ec := ansDecodeTable(&d.anstab, ans)
-							if ec != ecOK {
-								return dst, ec
-							}
-
-							buf := d.entbuf[entOffs:entOffs]
-							d.pack[i].data, ec = ans32DecodeExplicit(encoded, &d.anstab, int(uLen), buf)
-							if ec != ecOK {
-								return dst, ec
-							}
-							entOffs += uLen*/
+                            ans32::decoder{}.decode(entropy_storage[i], std::size_t(u_len), is, ans_tab);
                         } break;
 
 						case entropy_mode::ans1: {
-IGUANA_UNIMPLEMENTED /*TODO
-							ans := src[dataCursor : dataCursor+cLen]
-							dataCursor += cLen
-
-							encoded, ec := ansDecodeTable(&d.anstab, ans)
-							if ec != ecOK {
-								return dst, ec
-							}
-
-							buf := d.entbuf[entOffs:entOffs]
-							d.pack[i].data, ec = ans1DecodeExplicit(encoded, &d.anstab, int(uLen), buf)
-							if ec != ecOK {
-								return dst, ec
-							}
-							entOffs += uLen*/
+                            ans1::decoder::statistics::decoding_table ans_tab;
+                            ans1::decoder::statistics{is}.build_decoding_table(ans_tab);
+                            ans1::decoder{}.decode(entropy_storage[i], std::size_t(u_len), is, ans_tab);
                         } break;
 
 						case entropy_mode::ans_nibble: {
-IGUANA_UNIMPLEMENTED
-/*TODO
-							ansNib := src[dataCursor : dataCursor+cLen]
-							dataCursor += cLen
-
-							encoded, ec := ansNibbleDecodeTable(&d.ansnibtab, ansNib)
-							if ec != ecOK {
-								return dst, ec
-							}
-
-							buf := d.entbuf[entOffs:entOffs]
-							d.pack[i].data, ec = ansNibbleDecodeExplicit(encoded, &d.ansnibtab, int(uLen), buf)
-							if ec != ecOK {
-								return dst, ec
-							}
-							entOffs += uLen
-*/          
+                            ans_nibble::decoder::statistics::decoding_table ans_tab;
+                            ans_nibble::decoder::statistics{is}.build_decoding_table(ans_tab);
+                            ans_nibble::decoder{}.decode(entropy_storage[i], std::size_t(u_len), is, ans_tab);
                         } break;
 
 						default:
 							throw corrupted_bitstream_exception("unrecognized entropy mode");
 						}
+                        ctx.streams[i].set(entropy_storage[i].data(), entropy_storage[i].size());
 					}
 				}
 			}
@@ -393,30 +323,19 @@ void iguana::decoder::decompress_portable(context& ctx) {
     ctx.ec = error_code::ok;
 }
 
+// Append dst[offs : offs+len] to dst, obeying overlapped (self-referential) copy semantics
+// (port of iguanaWildCopy in the Go reference).
 void iguana::decoder::wild_copy(output_stream& dst, std::size_t offs, std::size_t len) {
-IGUANA_UNIMPLEMENTED
-/*TODO
-// append dst[pos:pos+matchlen] to dst
-// taking care to obey overlapped copy semantics
-func iguanaWildCopy(dst []byte, pos, matchlen int) []byte {
-	if pos+matchlen <= len(dst) {
-		// non-overlapped match: just a regular copy
-		return append(dst, dst[pos:pos+matchlen]...)
-	}
-	// slow path: overlapped match;
-	// can't copy in units larger than offset distance
-	for matchlen > 0 {
-		dist := len(dst) - pos
-		if matchlen < dist {
-			dist = matchlen
-		}
-		dst = append(dst, dst[pos:pos+dist]...)
-		pos += dist
-		matchlen -= dist
-	}
-	return dst
-}
-*/
+    // Ensure the buffer will not reallocate during the copy, so the source pointer stays valid
+    // (the top-level decode() already reserves the full uncompressed size, so this is normally a
+    // no-op). With a stable buffer, a byte-by-byte append reading from dst's own storage correctly
+    // realizes both the non-overlapping and the overlapping cases: when offs+i reaches into the
+    // freshly written region the byte read was produced earlier in this same loop, which is exactly
+    // the LZ overlapped-copy semantics.
+    dst.reserve_more(len);
+    const std::uint8_t* const base = dst.data();
+    for (std::size_t i = 0; i < len; ++i)
+        dst.append(base[offs + i]);
 }
 
 void iguana::decoder::at_process_start() {}

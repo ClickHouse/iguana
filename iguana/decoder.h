@@ -72,7 +72,10 @@ namespace iguana {
         static const internal::initializer<decoder> g_Initializer;
 
     private:
-        entropy_buffer m_ent_buf;
+        // NOTE (ClickHouse): start with an empty entropy buffer instead of eagerly allocating the
+        // default 1 MiB. This buffer is only used by the (unimplemented, unused) structural Iguana
+        // path; reset() grows it on demand. Avoids a 1 MiB malloc/free on every decompress call.
+        entropy_buffer m_ent_buf{0};
 
     public:
         decoder() {}
