@@ -15,10 +15,10 @@
 #include "output_stream.h"
 
 void iguana::output_stream::append(const value_type* p, size_type n) {
-    // TODO: optimize me
-    for(auto* const e = p + n; p != e; ++p) {
-        append(*p);
-    }
+    // NOTE (ClickHouse): bulk insert (memcpy) instead of byte-at-a-time push_back. This is the hot
+    // path for literal runs during decoding. It must only be used with an external source [p, p+n)
+    // (never the stream's own storage); decoder::wild_copy handles the self-referential case.
+    m_content.insert(m_content.end(), p, p + n);
 }
 
 void iguana::output_stream::append(const output_stream& s) {

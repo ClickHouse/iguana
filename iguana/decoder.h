@@ -93,6 +93,9 @@ namespace iguana {
     private:
         void decompress(output_stream& dst, const std::uint8_t* const src, std::uint64_t uncompressed_len, ssize_t& ctrl_cursor);
         static void decompress_portable(context& ctx);
+        // NEON implementation of the sequence decoder; defined in decoder_neon.cpp and only compiled
+        // on AArch64. Selected at process start (see at_process_start).
+        static void decompress_neon(context& ctx);
         static std::uint64_t read_control_var_uint(const std::uint8_t* src, ssize_t& cursor);
         static void wild_copy(output_stream& dst, std::size_t offs, std::size_t len);
         static void at_process_start();

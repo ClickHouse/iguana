@@ -338,7 +338,14 @@ void iguana::decoder::wild_copy(output_stream& dst, std::size_t offs, std::size_
         dst.append(base[offs + i]);
 }
 
-void iguana::decoder::at_process_start() {}
+void iguana::decoder::at_process_start() {
+    // NOTE (ClickHouse): dynamic dispatch for the structural sequence decoder. On AArch64 (where
+    // NEON is part of the baseline) use the NEON kernel; otherwise keep the portable kernel.
+    // Define IGUANA_DISABLE_DISPATCH to force the portable kernels (debugging / benchmarking).
+#if defined(__aarch64__) && !defined(IGUANA_DISABLE_DISPATCH)
+    g_Decompress = &decoder::decompress_neon;
+#endif
+}
 
 void iguana::decoder::at_process_end() {}
 

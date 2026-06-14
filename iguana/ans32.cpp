@@ -216,7 +216,8 @@ done:
 void iguana::ans32::decoder::at_process_start() {
     // NOTE (ClickHouse): dynamic CPU dispatch. g_Decompress was statically initialized to the
     // portable kernel above; switch to the AVX-512 kernel when the host supports it.
-#if defined(__x86_64__) || defined(_M_X64)
+    // Define IGUANA_DISABLE_DISPATCH to force the portable kernels (debugging / benchmarking).
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(IGUANA_DISABLE_DISPATCH)
     if (internal::cpu_has_avx512())
         g_Decompress = &decoder::decompress_avx512;
 #endif
