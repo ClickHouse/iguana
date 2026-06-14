@@ -213,6 +213,13 @@ done:
     ctx.ec = error_code::ok;
 }
 
-void iguana::ans32::decoder::at_process_start() {}
+void iguana::ans32::decoder::at_process_start() {
+    // NOTE (ClickHouse): dynamic CPU dispatch. g_Decompress was statically initialized to the
+    // portable kernel above; switch to the AVX-512 kernel when the host supports it.
+#if defined(__x86_64__) || defined(_M_X64)
+    if (internal::cpu_has_avx512())
+        g_Decompress = &decoder::decompress_avx512;
+#endif
+}
 
 void iguana::ans32::decoder::at_process_end() {}

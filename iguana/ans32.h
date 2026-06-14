@@ -96,6 +96,9 @@ namespace iguana::ans32 {
 
     private:
         static void decompress_portable(context& ctx);
+        // AVX-512 (F+BW+VL+DQ) implementation; defined in ans32_avx512.cpp and only compiled on
+        // x86-64. Selected at process start via cpu_has_avx512().
+        static void decompress_avx512(context& ctx);
         static void at_process_start();
         static void at_process_end();
     };

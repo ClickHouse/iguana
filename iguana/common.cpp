@@ -28,3 +28,15 @@ void iguana::internal::unimplemented(const char* file_name, std::uint64_t line) 
     throw std::runtime_error(
         std::string("iguana: invoked an unimplemented function ") + file_name + ":" + std::to_string(line));
 }
+
+bool iguana::internal::cpu_has_avx512() noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+    // Compiled without -mavx512*, so this detection runs safely on any x86-64 CPU.
+    return __builtin_cpu_supports("avx512f")
+        && __builtin_cpu_supports("avx512bw")
+        && __builtin_cpu_supports("avx512vl")
+        && __builtin_cpu_supports("avx512dq");
+#else
+    return false;
+#endif
+}
