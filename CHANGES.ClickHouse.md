@@ -40,7 +40,26 @@ structural (`iguana`) encoding.
 * **`decoder.h` — allocation.** The decoder no longer eagerly allocates a 1 MiB entropy buffer per
   instance (it grows on demand).
 
+## AVX-512 acceleration and dynamic dispatch
+
+* **`ans32_avx512_core.h` / `ans32_avx512.cpp` — AVX-512 ANS32 decoder.** The 32-way interleaved
+  rANS decoder is ported to AVX-512 intrinsics from the Go reference assembly
+  (`ans32DecompressAVX512Generic`), using only AVX-512 F + BW + VL (`VPGATHERDD` for the table
+  lookup, `VPEXPANDD` for renormalization; no VBMI2). The kernel is a freestanding header so the
+  exact shipping code can be compiled into a standalone validation harness.
+* **`common.{h,cpp}`, `ans32.{h,cpp}` — dynamic dispatch.** `cpu_has_avx512` reports the F+BW+VL+DQ
+  feature set on x86-64; `ans32::decoder::at_process_start` swaps the decode function pointer to the
+  AVX-512 kernel when available. On every other host (e.g. AArch64) the portable kernel is used.
+* **`output_stream.h` — `claim`.** Returns a writable tail region so the vectorized decoder can write
+  a contiguous block instead of byte-at-a-time.
+
+> Validation note: the AVX-512 kernel was developed on an AArch64 host, where it cannot be executed
+> (qemu-TCG does not implement AVX-512). It is byte-exact-verifiable against the portable decoder
+> with the fixture harness checked in alongside the ClickHouse integration, and is exercised by the
+> ClickHouse round-trip test on x86 AVX-512 CI. Run-validate on AVX-512 hardware before relying on it.
+
 ## Not covered
 
-The SIMD/assembly fast paths are not ported; only the portable code paths are implemented. The
-`c_bindings.{h,cpp}` C API stub and the `main.cpp` command-line tool were left as upstream.
+Still portable-only: the AVX-512 **ANS32 encoder**, the **structural (Iguana) decoder**, and the
+**match finder** (the remaining accelerated kernels in the Go reference). The `c_bindings.{h,cpp}` C
+API stub and the `main.cpp` command-line tool were left as upstream.
