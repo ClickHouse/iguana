@@ -165,6 +165,9 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 		state[lane+16] = utils::read_little_endian<std::uint32_t>(src + lane * 4 + cursor_rev);
 	}
 
+	// NOTE (ClickHouse): write decoded symbols into a claimed raw buffer instead of appending one
+	// byte at a time (the per-byte push_back was the dominant cost of this decoder).
+	std::uint8_t* const out = ctx.dst.claim(ctx.result_size);
 	std::size_t cursor_dst = 0;
 
 	for(;;) {
@@ -178,7 +181,7 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 			state[lane] = freq * (x >> statistics::word_M_bits) + bias;
 			const auto s = std::uint8_t(t >> 24);
 			if (cursor_dst < ctx.result_size) {
-				ctx.dst.append(s);
+				out[cursor_dst] = s;
 				++cursor_dst;
 			} else {
 				goto done;
@@ -220,6 +223,8 @@ void iguana::ans32::decoder::at_process_start() {
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(IGUANA_DISABLE_DISPATCH)
     if (internal::cpu_has_avx512())
         g_Decompress = &decoder::decompress_avx512;
+#elif defined(__aarch64__) && !defined(IGUANA_DISABLE_DISPATCH)
+    g_Decompress = &decoder::decompress_neon;
 #endif
 }
 

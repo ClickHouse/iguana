@@ -99,6 +99,8 @@ namespace iguana::ans32 {
         // AVX-512 (F+BW+VL+DQ) implementation; defined in ans32_avx512.cpp and only compiled on
         // x86-64. Selected at process start via cpu_has_avx512().
         static void decompress_avx512(context& ctx);
+        // NEON implementation; defined in ans32_neon.cpp and only compiled on AArch64.
+        static void decompress_neon(context& ctx);
         static void at_process_start();
         static void at_process_end();
     };
