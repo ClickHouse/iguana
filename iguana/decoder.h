@@ -72,7 +72,10 @@ namespace iguana {
         static const internal::initializer<decoder> g_Initializer;
 
     private:
-        entropy_buffer m_ent_buf;
+        // NOTE (ClickHouse): start with an empty entropy buffer instead of eagerly allocating the
+        // default 1 MiB. This buffer is only used by the (unimplemented, unused) structural Iguana
+        // path; reset() grows it on demand. Avoids a 1 MiB malloc/free on every decompress call.
+        entropy_buffer m_ent_buf{0};
 
     public:
         decoder() {}
@@ -90,6 +93,9 @@ namespace iguana {
     private:
         void decompress(output_stream& dst, const std::uint8_t* const src, std::uint64_t uncompressed_len, ssize_t& ctrl_cursor);
         static void decompress_portable(context& ctx);
+        // NEON implementation of the sequence decoder; defined in decoder_neon.cpp and only compiled
+        // on AArch64. Selected at process start (see at_process_start).
+        static void decompress_neon(context& ctx);
         static std::uint64_t read_control_var_uint(const std::uint8_t* src, ssize_t& cursor);
         static void wild_copy(output_stream& dst, std::size_t offs, std::size_t len);
         static void at_process_start();

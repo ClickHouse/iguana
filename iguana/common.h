@@ -49,6 +49,11 @@ namespace iguana {
 
     namespace internal {
         [[noreturn]] void unimplemented(const char* file_name, std::uint64_t line);
+
+        // NOTE (ClickHouse): runtime CPU dispatch support. Returns true only on x86-64 hosts that
+        // support the AVX-512 feature set used by the accelerated kernels (F + BW + VL + DQ). On any
+        // other architecture (e.g. AArch64) it returns false and the portable kernels are used.
+        bool cpu_has_avx512() noexcept;
     }
 }
 

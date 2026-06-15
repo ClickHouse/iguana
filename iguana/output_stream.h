@@ -57,6 +57,17 @@ namespace iguana {
             m_content.clear();
         }
 
+        // NOTE (ClickHouse): grow the stream by n bytes and return a writable pointer to that new
+        // tail region, so a vectorized producer can write a contiguous block directly (the
+        // byte-at-a-time append would otherwise dominate an AVX-512 decode). The returned pointer is
+        // valid until the next mutating call. Unlike append(p, n) this must not be used to copy from
+        // the stream's own storage (use append for that; see decoder::wild_copy).
+        value_type* claim(size_type n) {
+            const size_type old = m_content.size();
+            m_content.resize(old + n);
+            return m_content.data() + old;
+        }
+
         //
 
         void append(value_type v) {

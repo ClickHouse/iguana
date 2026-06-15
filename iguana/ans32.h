@@ -31,6 +31,9 @@ namespace iguana::ans32 {
        static const internal::initializer<encoder> g_Initializer;
 
     private:
+        // NOTE (ClickHouse): forward and reverse halves are accumulated separately so that the
+        // forward half can be reversed in place when assembling the final stream (see encode()).
+        output_stream m_fwd;
         output_stream m_rev;
 
     public:
@@ -93,6 +96,11 @@ namespace iguana::ans32 {
 
     private:
         static void decompress_portable(context& ctx);
+        // AVX-512 (F+BW+VL+DQ) implementation; defined in ans32_avx512.cpp and only compiled on
+        // x86-64. Selected at process start via cpu_has_avx512().
+        static void decompress_avx512(context& ctx);
+        // NEON implementation; defined in ans32_neon.cpp and only compiled on AArch64.
+        static void decompress_neon(context& ctx);
         static void at_process_start();
         static void at_process_end();
     };

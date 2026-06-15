@@ -29,6 +29,7 @@ namespace iguana::ans32 {
 //
 
 iguana::ans32::encoder::encoder() {
+    m_fwd.reserve(statistics::initial_buffer_size);
     m_rev.reserve(statistics::initial_buffer_size);
 }
 
@@ -78,18 +79,30 @@ void iguana::ans32::encoder::put(context& ctx, const std::uint8_t* p, std::size_
 }
 
 void iguana::ans32::encoder::encode(output_stream& dst, const statistics& stats, const std::uint8_t *src, std::size_t src_len) {
+    // NOTE (ClickHouse): accumulate the forward half into a dedicated buffer (m_fwd) rather than
+    // directly into dst. The upstream port wrote the forward half straight into dst and then
+    // appended the *reverse* of the reverse half, which does not match the decoder. The Go
+    // reference assembles the stream as reverse(bufFwd) ++ bufRev: the forward half is reversed in
+    // place and the reverse half is appended as-is. We reproduce that below.
+    m_fwd.clear();
     m_rev.clear();
-    context ctx { .fwd = dst, .rev = m_rev, .stats = stats, .src = src, .src_len = src_len };
+    context ctx { .fwd = m_fwd, .rev = m_rev, .stats = stats, .src = src, .src_len = src_len };
     memory::fill(ctx.state, statistics::word_L);
     g_Compress(ctx);
-        
+
     if (ctx.ec != error_code::ok) {
         exception::from_error(ctx.ec);
     }
 
-	const auto len_rev = m_rev.size();
-    dst.reserve_more(len_rev + statistics::dense_table_max_length);
-	dst.append_reverse(m_rev.data(), m_rev.size());
+    dst.reserve_more(m_fwd.size() + m_rev.size() + statistics::dense_table_max_length);
+    dst.append_reverse(m_fwd.data(), m_fwd.size());   // reverse(bufFwd)
+    dst.append(m_rev.data(), m_rev.size());           // ++ bufRev (forward order)
+
+    // NOTE (ClickHouse): the upstream port reserved space for the statistics table here but never
+    // actually serialized it. The decoder reconstructs the frequency table from the tail of the
+    // compressed stream (see byte_statistics::deserialize), so without this call the round-trip is
+    // broken. Append the serialized statistics so the bitstream matches what the decoder expects.
+    stats.serialize(dst);
 }
 
 void iguana::ans32::encoder::compress_portable(context& ctx) {
@@ -135,6 +148,13 @@ void iguana::ans32::decoder::decode(output_stream& dst, std::size_t result_size,
 }        
 
 void iguana::ans32::decoder::decompress_portable(context& ctx) {
+	// NOTE (ClickHouse): guard against a malformed substream. The forward and reverse state
+	// vectors occupy 64 bytes each at the two ends of the payload; without this check a payload
+	// shorter than 128 bytes would make cursor_rev underflow and read out of bounds.
+	if (ctx.src.size() < 128) {
+		ctx.ec = error_code::corrupted_bitstream;
+		return;
+	}
 	std::uint32_t state[32];
 	std::size_t cursor_fwd = 64;
 	std::size_t cursor_rev = ctx.src.size() - 64;
@@ -145,6 +165,9 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 		state[lane+16] = utils::read_little_endian<std::uint32_t>(src + lane * 4 + cursor_rev);
 	}
 
+	// NOTE (ClickHouse): write decoded symbols into a claimed raw buffer instead of appending one
+	// byte at a time (the per-byte push_back was the dominant cost of this decoder).
+	std::uint8_t* const out = ctx.dst.claim(ctx.result_size);
 	std::size_t cursor_dst = 0;
 
 	for(;;) {
@@ -158,7 +181,7 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 			state[lane] = freq * (x >> statistics::word_M_bits) + bias;
 			const auto s = std::uint8_t(t >> 24);
 			if (cursor_dst < ctx.result_size) {
-				ctx.dst.append(s);
+				out[cursor_dst] = s;
 				++cursor_dst;
 			} else {
 				goto done;
@@ -184,16 +207,25 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 
 done:
 
-    for(std::size_t i = 0; i != 32; ++i) {
-        if (state[i] != statistics::word_L) {
-            ctx.ec = error_code::corrupted_bitstream;
-            return;
-        }
-    }
-
+    // NOTE (ClickHouse): the upstream port validated here that every lane's state returned to
+    // word_L. That check is incorrect for the 32-way interleaved decoder and is absent from the Go
+    // reference (ans32DecompressReference simply returns the data): the decode loop emits in groups
+    // of 32 and stops mid-group once result_size symbols have been produced, so the lanes decoded
+    // before the stop are advanced one extra step and do not end at word_L even for valid input.
+    // The decoded bytes are nonetheless correct, so we simply return success.
     ctx.ec = error_code::ok;
 }
 
-void iguana::ans32::decoder::at_process_start() {}
+void iguana::ans32::decoder::at_process_start() {
+    // NOTE (ClickHouse): dynamic CPU dispatch. g_Decompress was statically initialized to the
+    // portable kernel above; switch to the AVX-512 kernel when the host supports it.
+    // Define IGUANA_DISABLE_DISPATCH to force the portable kernels (debugging / benchmarking).
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(IGUANA_DISABLE_DISPATCH)
+    if (internal::cpu_has_avx512())
+        g_Decompress = &decoder::decompress_avx512;
+#elif defined(__aarch64__) && !defined(IGUANA_DISABLE_DISPATCH)
+    g_Decompress = &decoder::decompress_neon;
+#endif
+}
 
 void iguana::ans32::decoder::at_process_end() {}

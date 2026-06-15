@@ -15,6 +15,7 @@
 #pragma once
 #include "common.h"
 #include <exception>
+#include <string>
 
 namespace iguana {
 
@@ -37,12 +38,19 @@ namespace iguana {
     class IGUANA_API exception : public std::exception {
         using super = std::exception;
 
+    private:
+        // NOTE (ClickHouse): the upstream port passed the message to std::exception(const char*),
+        // which is a non-standard MSVC-only constructor and does not exist in libstdc++/libc++.
+        // Store the message here and expose it through what() so the code is portable.
+        std::string m_message;
+
     protected:
         exception() {}
-        explicit exception(const char* msg) : super(msg) {}
+        explicit exception(const char* msg) : m_message(msg ? msg : "") {}
 
     public:
         virtual ~exception();
+        const char* what() const noexcept override { return m_message.empty() ? "iguana error" : m_message.c_str(); }
         virtual error_code get_error_code() const noexcept = 0;
 
     public:

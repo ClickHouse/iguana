@@ -41,6 +41,11 @@ void iguana::ans1::encoder::encode(output_stream& dst, const statistics& stats, 
         exception::from_error(ctx.ec);
     }
     dst.reserve_more(statistics::dense_table_max_length);
+
+    // NOTE (ClickHouse): like ans32, the upstream port reserved space for the statistics table but
+    // never serialized it, leaving the bitstream incompatible with the decoder, which recovers the
+    // frequency table from the tail of the compressed stream. Append the serialized statistics.
+    stats.serialize(dst);
 }
 
 void iguana::ans1::encoder::compress_portable(context& ctx) {
