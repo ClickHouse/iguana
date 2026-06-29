@@ -77,6 +77,32 @@ as the structural copy is not its bottleneck there.
 `IGUANA_DISABLE_DISPATCH` forces the portable kernels (used for the A/B benchmark above and for
 debugging).
 
+## Malformed-input hardening
+
+`iguana::decoder::decode` is exposed to bytes read from on-disk parts, so it must turn every
+malformed bitstream into a recoverable exception rather than an out-of-bounds access. An
+AddressSanitizer fuzz harness over the decoder (random buffers plus truncations and mutations of
+valid streams, both the portable and the NEON kernels) found several reads/writes past the buffer
+on crafted input; all are now bounded:
+
+* **`decoder.cpp` — command data segments.** `decompress` now receives the compressed size and
+  bounds every forward read (`copy_raw`, the top-level `decode_ans*` substreams, and each
+  `decode_iguana` substream) against it before advancing the data cursor, so a length taken from the
+  control stream can no longer make a segment read past the end of the input.
+* **`ans_byte_statistics.cpp` / `ans_nibble_statistics.cpp` — frequency table.** `deserialize` now
+  rejects a recovered frequency table whose entries sum to more than `word_M`. `build_decoding_table`
+  writes one `decoding_table` slot per unit of frequency, and the table has exactly `word_M` entries,
+  so an over-large sum (a single nibble-coded frequency can reach `0xfff + 277`) would otherwise
+  overflow the fixed-size table.
+* **`ans1.cpp` / `ans_nibble.cpp` / `ans32.cpp` / `ans32_neon.cpp` / `ans32_avx512_core.h` — rANS
+  renormalization.** Every kernel bounds the backward/forward renormalization cursor against the
+  substream before reading the next word(s). The cursors are unsigned and previously wrapped on
+  underflow (or ran past the end), reading outside the payload on a corrupt or truncated stream. The
+  guards only reject reads that fall outside the substream, which a well-formed payload never does.
+* **`decoder.cpp` / `decoder_neon.cpp` — match offset.** `wild_copy` / `neon_wild_copy` reject a
+  match whose offset lies outside the output produced so far (the offset is derived from the
+  untrusted offset substreams and wraps to a large value when the distance exceeds the output).
+
 ## Not covered
 
 Still portable-only: the AVX-512 **ANS32 encoder**, the **structural (Iguana) decoder**, and the

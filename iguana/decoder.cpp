@@ -63,7 +63,7 @@ void iguana::decoder::decode(output_stream& dst, input_stream& src) {
 	}
 
     dst.reserve_more(uncompressed_len);
-    decompress(dst, p_data, uncompressed_len, cursor);
+    decompress(dst, p_data, src.size(), uncompressed_len, cursor);
 }
 
 std::uint64_t iguana::decoder::read_control_var_uint(const std::uint8_t* src, ssize_t& cursor) {
@@ -79,13 +79,25 @@ std::uint64_t iguana::decoder::read_control_var_uint(const std::uint8_t* src, ss
     throw out_of_input_data_exception();
 }
 
-void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const src, std::uint64_t uncompressed_len, ssize_t& ctrl_cursor) {
+void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const src, std::size_t src_size, std::uint64_t uncompressed_len, ssize_t& ctrl_cursor) {
     // NOTE (ClickHouse): the upstream port left an IGUANA_UNIMPLEMENTED marker at the top of this
     // function, which aborted before reaching the command dispatch loop below. The copy_raw,
     // decode_ans32 and decode_ans1 command handlers are fully implemented, so the marker is removed
     // to enable the entropy-only decoding path used by the Iguana codec.
 
     context ctx{ .dst = dst, .last_offset = 0 };
+
+    // NOTE (ClickHouse): every command reads its payload from the forward-growing data region at the
+    // front of the same buffer the control stream is consumed from (backwards). Each payload length
+    // comes from the untrusted control stream, so it must be bounded against the supplied input before
+    // the data cursor is advanced or the bytes are read; otherwise a malformed stream can make
+    // copy_raw, an entropy substream, or a verbatim substream read past the end of the compressed
+    // buffer. require_data(n) throws unless [data_cursor, data_cursor + n) stays within src_size.
+    const auto require_data = [src_size](std::uint64_t data_cursor, std::uint64_t n)
+    {
+        if (data_cursor > src_size || n > std::uint64_t(src_size) - data_cursor)
+            throw out_of_input_data_exception();
+    };
 
 	// Fetch the header
 
@@ -98,6 +110,7 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
 		switch (static_cast<command>(cmd & command_mask)) {
             case command::copy_raw: {
                 const std::uint64_t n = read_control_var_uint(src, ctrl_cursor);
+                require_data(data_cursor, n);
                 dst.append(src + data_cursor, n);
                 data_cursor += n;
             } break;
@@ -105,6 +118,7 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
             case command::decode_ans32: {
                 const std::uint64_t len_uncompressed = read_control_var_uint(src, ctrl_cursor);
                 const std::uint64_t len_compressed = read_control_var_uint(src, ctrl_cursor);
+                require_data(data_cursor, len_compressed);
 
                 {   typename ans32::decoder::statistics::decoding_table ans_tab;
                     input_stream is{src + data_cursor, std::size_t(len_compressed)};
@@ -120,6 +134,7 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
 		case command::decode_ans1: {
                 const std::uint64_t len_uncompressed = read_control_var_uint(src, ctrl_cursor);
                 const std::uint64_t len_compressed = read_control_var_uint(src, ctrl_cursor);
+                require_data(data_cursor, len_compressed);
 
                  {  ans1::decoder::statistics::decoding_table ans_tab;
                     input_stream is{src + data_cursor, std::size_t(len_compressed)};
@@ -135,6 +150,7 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
 		case command::decode_ans_nibble: {
                 const std::uint64_t len_uncompressed = read_control_var_uint(src, ctrl_cursor);
                 const std::uint64_t len_compressed = read_control_var_uint(src, ctrl_cursor);
+                require_data(data_cursor, len_compressed);
 
                 {   ans_nibble::decoder::statistics::decoding_table ans_tab;
                     input_stream is{src + data_cursor, std::size_t(len_compressed)};
@@ -166,6 +182,7 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
                 // No substream is entropy-coded: each is stored verbatim.
 				for(std::size_t i = 0; i != substream::count; ++i) {
                     const std::uint64_t u_len = read_control_var_uint(src, ctrl_cursor);
+                    require_data(data_cursor, u_len);
                     ctx.streams[i].set(src + data_cursor, std::size_t(u_len));
                     data_cursor += u_len;
 				}
@@ -179,10 +196,12 @@ void iguana::decoder::decompress(output_stream& dst, const std::uint8_t* const s
 					const std::uint64_t u_len = u_lens[i];
 					const auto em = static_cast<entropy_mode>((hdr >> (i * 4)) & 0x0f);
 					if (em == entropy_mode::none) {
+                        require_data(data_cursor, u_len);
                         ctx.streams[i].set(src + data_cursor, std::size_t(u_len));
                         data_cursor += u_len;
 					} else {
                         const std::uint64_t c_len = read_control_var_uint(src, ctrl_cursor);
+                        require_data(data_cursor, c_len);
                         input_stream is{src + data_cursor, std::size_t(c_len)};
                         data_cursor += c_len;
 						switch(em) {
@@ -332,6 +351,13 @@ void iguana::decoder::wild_copy(output_stream& dst, std::size_t offs, std::size_
     // realizes both the non-overlapping and the overlapping cases: when offs+i reaches into the
     // freshly written region the byte read was produced earlier in this same loop, which is exactly
     // the LZ overlapped-copy semantics.
+    // NOTE (ClickHouse): the match offset is derived from the untrusted token/offset substreams. The
+    // caller computes it as (current output size - match distance) truncated to 32 bits, so a
+    // malformed stream whose distance exceeds the output produced so far wraps around to a large
+    // value. Reading from such an offset would be an out-of-bounds read of the output buffer, so
+    // reject it instead. A valid match always references already-produced output (offs < size).
+    if (offs >= dst.size())
+        throw corrupted_bitstream_exception("Iguana match offset points outside the decompressed output");
     dst.reserve_more(len);
     const std::uint8_t* const base = dst.data();
     for (std::size_t i = 0; i < len; ++i)

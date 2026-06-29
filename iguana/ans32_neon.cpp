@@ -105,7 +105,14 @@ void decoder::decompress_neon(context& ctx)
             std::uint32_t s[4];
             vst1q_u32(s, sv[g]);
             for (int l = 0; l < 4; ++l)
-                if (s[l] < L) { s[l] = (s[l] << LB) | load16(src + cursor_fwd); cursor_fwd += 2; }
+                if (s[l] < L)
+                {
+                    // NOTE (ClickHouse): bound the forward renorm read against the substream so a
+                    // malformed bitstream cannot read past the end of the buffer.
+                    if (cursor_fwd > size - 2) { ctx.ec = error_code::corrupted_bitstream; return; }
+                    s[l] = (s[l] << LB) | load16(src + cursor_fwd);
+                    cursor_fwd += 2;
+                }
             sv[g] = vld1q_u32(s);
         }
         // Reverse renormalization (lanes 16..31, words consumed backward).
@@ -114,7 +121,14 @@ void decoder::decompress_neon(context& ctx)
             std::uint32_t s[4];
             vst1q_u32(s, sv[g]);
             for (int l = 0; l < 4; ++l)
-                if (s[l] < L) { s[l] = (s[l] << LB) | load16(src + cursor_rev - 2); cursor_rev -= 2; }
+                if (s[l] < L)
+                {
+                    // NOTE (ClickHouse): bound the backward renorm read against the substream so a
+                    // malformed bitstream cannot read before the buffer (cursor_rev wraps on underflow).
+                    if (cursor_rev < 2) { ctx.ec = error_code::corrupted_bitstream; return; }
+                    s[l] = (s[l] << LB) | load16(src + cursor_rev - 2);
+                    cursor_rev -= 2;
+                }
             sv[g] = vld1q_u32(s);
         }
     }

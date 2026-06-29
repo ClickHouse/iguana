@@ -283,6 +283,19 @@ void iguana::ans::byte_statistics::deserialize(input_stream& s) {
 	}
 
     s.set_end(s.data() + ((nibidx + 1) >> 1));
+
+    // NOTE (ClickHouse): the frequencies were recovered from an untrusted stream. build_decoding_table
+    // writes one decoding_table slot per unit of frequency, starting at the running cumulative offset,
+    // so the frequencies must sum to no more than word_M (the decoding_table has exactly word_M
+    // entries). A malformed stream can encode a single per-symbol frequency as large as 0xfff + 277,
+    // whose cumulative sum would otherwise overflow the fixed-size table and corrupt the stack.
+    // Reject such input here rather than writing out of bounds. The values are summed exactly as
+    // build_decoding_table reads them (m_table holds the raw frequency, not the packed form).
+    std::uint64_t total = 0;
+    for (std::size_t i = 0; i != m_table.size(); ++i)
+        total += m_table[i];
+    if (total > word_M)
+        throw corrupted_bitstream_exception("ANS byte frequency table sums to more than word_M");
 }
 
 void iguana::ans::byte_statistics::build_decoding_table(decoding_table& tab) const noexcept {

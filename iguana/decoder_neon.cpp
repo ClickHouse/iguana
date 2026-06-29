@@ -43,6 +43,13 @@ constexpr std::uint32_t neon_last_long_offset    = 31;
 void neon_wild_copy(output_stream& dst, std::size_t offs, std::size_t len)
 {
     const std::size_t old_size = dst.size();
+    // NOTE (ClickHouse): the match offset comes from the untrusted offset substreams. The caller
+    // computes it as (output size - match distance) truncated to 32 bits, which wraps to a large
+    // value when the distance exceeds the output produced so far. Reading from such an offset would
+    // be an out-of-bounds read (and `distance` below would underflow), so reject it. A valid match
+    // always references already-produced output (offs < old_size). Mirrors decoder::wild_copy.
+    if (offs >= old_size)
+        throw corrupted_bitstream_exception("Iguana match offset points outside the decompressed output");
     std::uint8_t * const w = dst.claim(len);   // [old_size, old_size+len); no reallocation
     const std::uint8_t * const src = dst.data() + offs;
     const std::size_t distance = old_size - offs;

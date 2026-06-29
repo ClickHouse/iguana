@@ -116,6 +116,9 @@ void iguana::ans1::decoder::decompress_portable(context& ctx) {
 
 		// Normalize state
 		if (const auto x = state; x < statistics::word_L) {
+			// NOTE (ClickHouse): bound the backward renorm read against the substream so a malformed
+			// bitstream cannot read before the buffer (cursor_src is unsigned and wraps on underflow).
+			if (cursor_src < 2) { ctx.ec = error_code::corrupted_bitstream; return; }
 			const auto v = utils::read_little_endian<std::uint16_t>(src + cursor_src - 2);
 			cursor_src -= 2;
 			state = (x << statistics::word_L_bits) | std::uint32_t(v);
