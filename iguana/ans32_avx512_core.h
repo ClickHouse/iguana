@@ -78,6 +78,13 @@ inline bool ans32_decode(const uint8_t * src, size_t size, const uint32_t * tab,
             _mm512_and_epi32(_mm512_srli_epi32(tab_hi, ANS_M_BITS), mmask));
 
         // Forward renormalization: every lane with state < L consumes the next 16-bit word.
+        // NOTE (ClickHouse): the renorm step speculatively loads a full 32-byte block at cursor_fwd
+        // before consuming only the needed words. Bound it against the substream so a malformed
+        // bitstream cannot read past the end of the buffer. A valid stream consumes at most
+        // (size - 128) renorm bytes split between the two halves, so cursor_fwd + 32 never exceeds
+        // src + size here and this guard cannot reject a well-formed payload.
+        if (cursor_fwd + 32 > src + size)
+            return false;
         const __m512i fwd_words = _mm512_cvtepu16_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i *>(cursor_fwd)));
         const __mmask16 k_lo = _mm512_cmplt_epu32_mask(state_lo, lvec);
         state_lo = _mm512_mask_or_epi32(state_lo, k_lo,
@@ -85,6 +92,11 @@ inline bool ans32_decode(const uint8_t * src, size_t size, const uint32_t * tab,
         cursor_fwd += 2 * size_t(_mm_popcnt_u32(k_lo));
 
         // Reverse renormalization: words read from high to low addresses, hence reversed first.
+        // NOTE (ClickHouse): as for the forward half, bound the speculative 32-byte block load at
+        // cursor_rev - 32 against the start of the substream. A valid stream keeps cursor_rev - 32
+        // at or above src, so this guard only fires on malformed input.
+        if (cursor_rev < src + 32)
+            return false;
         const __m256i rev_raw = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(cursor_rev - 32));
         const __m512i rev_words = _mm512_cvtepu16_epi32(_mm256_permutexvar_epi16(rev_word_idx, rev_raw));
         const __mmask16 k_hi = _mm512_cmplt_epu32_mask(state_hi, lvec);

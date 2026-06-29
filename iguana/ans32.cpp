@@ -190,6 +190,9 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 		// Normalize the forward part
 		for(std::size_t lane = 0; lane != 16; ++lane) {
 			if (const auto x = state[lane]; x < statistics::word_L) {
+				// NOTE (ClickHouse): bound the forward renorm read against the substream so a
+				// malformed bitstream cannot read past the end of the buffer.
+				if (cursor_fwd > ctx.src.size() - 2) { ctx.ec = error_code::corrupted_bitstream; return; }
 				const auto v = utils::read_little_endian<std::uint16_t>(src + cursor_fwd);
 				cursor_fwd += 2;
 				state[lane] = (x << statistics::word_L_bits) | std::uint32_t(v);
@@ -198,6 +201,9 @@ void iguana::ans32::decoder::decompress_portable(context& ctx) {
 		// Normalize the reverse part
 		for(std::size_t lane = 16; lane != 32; ++lane) {
 			if (const auto x = state[lane]; x < statistics::word_L) {
+				// NOTE (ClickHouse): bound the backward renorm read against the substream so a
+				// malformed bitstream cannot read before the buffer (cursor_rev wraps on underflow).
+				if (cursor_rev < 2) { ctx.ec = error_code::corrupted_bitstream; return; }
 				const auto v = utils::read_little_endian<std::uint16_t>(src + cursor_rev - 2);
 				cursor_rev -= 2;
 				state[lane] = (x << statistics::word_L_bits) | std::uint32_t(v);

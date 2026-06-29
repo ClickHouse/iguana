@@ -121,6 +121,10 @@ void iguana::ans_nibble::decoder::decompress_portable(context& ctx) {
             lo_nib = static_cast<std::uint8_t>(t >> 24);
 			// Normalize
 			if (const std::uint32_t y = state; y < statistics::word_L) {
+				// NOTE (ClickHouse): bound the backward renorm read against the substream so a
+				// malformed bitstream cannot read outside the buffer (cursor_src is unsigned and
+				// wraps on underflow; src_len is also < 6 for tiny inputs that pass the size check).
+				if (cursor_src > src_len - 2) { ctx.ec = error_code::corrupted_bitstream; return; }
 				const auto z = utils::read_little_endian<std::uint16_t>(src + cursor_src);
 				cursor_src -= 2;
 				state = (y << statistics::word_L_bits) | static_cast<std::uint32_t>(z);
@@ -139,6 +143,10 @@ void iguana::ans_nibble::decoder::decompress_portable(context& ctx) {
             hi_nib = static_cast<std::uint8_t>(t >> 24);
 			// Normalize
 			if (const std::uint32_t y = state; y < statistics::word_L) {
+				// NOTE (ClickHouse): bound the backward renorm read against the substream so a
+				// malformed bitstream cannot read outside the buffer (cursor_src is unsigned and
+				// wraps on underflow; src_len is also < 6 for tiny inputs that pass the size check).
+				if (cursor_src > src_len - 2) { ctx.ec = error_code::corrupted_bitstream; return; }
 				const auto z = utils::read_little_endian<std::uint16_t>(src + cursor_src);
 				cursor_src -= 2;
 				state = (y << statistics::word_L_bits) | static_cast<std::uint32_t>(z);
